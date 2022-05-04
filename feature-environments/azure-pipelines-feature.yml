@@ -1,0 +1,87 @@
+trigger: none
+
+parameters:
+- name: webAppNameBackend
+  displayName: Backend web app name
+  type: string
+  default: 'app-myproject-backend-feature-1'
+  
+variables:
+  buildConfiguration: 'Release'
+  restoreBuildProjects: '**/*.csproj'
+  baseWorkingDirectory: ''
+  artifactDirectory: $(build.artifactstagingdirectory)/MyProject$(Build.BuildNumber)
+  azureServiceConnection: 'MyServiceConnection'
+  resourceGroupName: 'rg-foo-feature'
+  webAppName: '${{ parameters.webAppNameBackend }}'
+  backendRedirectUri: 'https://${{ parameters.webAppNameBackend }}.azurewebsites.net/signin-oidc'
+ 
+steps:
+
+# Restores the dependencies and tools of a project.
+- task: DotNetCoreCLI@2
+  displayName: dotnet restore
+  inputs:
+    command: 'restore'
+    workingDirectory: $(baseWorkingDirectory)
+    projects: '$(restoreBuildProjects)'
+    feedsToUse: 'select'
+
+# Builds a project and all of its dependencies.
+- task: DotNetCoreCLI@2
+  displayName: dotnet build
+  inputs:
+    command: build
+    arguments: '--configuration $(BuildConfiguration)'
+    workingDirectory: $(baseWorkingDirectory)
+    projects: '$(restoreBuildProjects)'
+
+# Publishes the application and its dependencies to a folder for deployment to a hosting system.
+- task: DotNetCoreCLI@2
+  displayName: dotnet publish
+  inputs:
+    command: publish
+    publishWebProjects: false
+    arguments: 'MyProject/MyProject.csproj --configuration $(BuildConfiguration) --output $(artifactDirectory)'
+    zipAfterPublish: True
+    workingDirectory: $(baseWorkingDirectory)
+
+# Take all the files in $(build.artifactstagingdirectory) and uploads them as an artifact of your build.
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish build artifacts'
+  inputs:
+    PathtoPublish: '$(build.artifactstagingdirectory)'
+
+# Deploy ARM template for new feature environment
+- task: AzurePowerShell@3
+  displayName: 'Deploy ARM template for feature'
+  condition: succeeded()
+  inputs:
+    azureSubscription: '$(azureServiceConnection)'
+    ScriptPath: 'deploy/Feature.AzureResourceGroup/Deploy-AzureResourceGroup.ps1'
+    ScriptArguments: -ResourceGroupName '$(resourceGroupName)' -WebAppName '$(webAppName)'
+    azurePowerShellVersion: LatestVersion
+
+- task: AzureCLI@2
+  displayName: 'Add RedirectUri to App Registration'
+  condition: succeeded()
+  inputs:
+    azureSubscription: '$(azureServiceConnection)'
+    scriptType: ps
+    scriptLocation: inlineScript
+    inlineScript: |
+      $appdata = az rest --method GET --uri 'https://graph.microsoft.com/v1.0/applications/000000-00000-0000000-00000000-00000' | ConvertFrom-Json
+      $webRedirectUris = [System.Collections.ArrayList]$appdata.web.redirectUris
+      If ($webRedirectUris -notcontains ${env:backendRedirectUri})
+      {
+        $webRedirectUris.Add(${env:backendRedirectUri})
+        $updatedRedirectUris = $("'" + ($webRedirectUris -join "','") + "'")
+        az rest --method PATCH --uri 'https://graph.microsoft.com/v1.0/applications/000000-00000-0000000-00000000-00000' --headers 'Content-Type=application/json' --body $("{web:{redirectUris:[" + $updatedRedirectUris + "]}}")
+      }
+
+# Deploy the .zip Web Deploy package to an Azure Web App
+- task: AzureWebApp@1
+  inputs:
+    azureSubscription: '$(azureServiceConnection)'
+    appName: '$(webAppName)'
+    package: $(build.artifactstagingdirectory)/**/*.zip
