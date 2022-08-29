@@ -1,10 +1,6 @@
-trigger: none
-
-parameters:
-- name: webAppNameBackend
-  displayName: Backend web app name
-  type: string
-  default: 'app-myproject-backend-feature-1'
+trigger: 
+- feature/*
+- bugfix/*
   
 variables:
   buildConfiguration: 'Release'
@@ -17,6 +13,28 @@ variables:
   backendRedirectUri: 'https://${{ parameters.webAppNameBackend }}.azurewebsites.net/signin-oidc'
  
 steps:
+- powershell: |
+    $digits = ([regex]'\d+').Match(('$(Build.SourceBranchName)')).Value
+
+    if ($digits.length -eq 0)
+    {
+        Write-Output "##[error]Branch name is missing digits. Exiting."
+        Write-Output "##[error]Stopping pipeline build."
+        $uri = "https://dev.azure.com/foo/bar/_apis/build/builds/$(Build.BuildId)?api-version=5.1"
+        $json = @{status="Cancelling"} | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri $uri -Method Patch -Headers @{Authorization = "Bearer $(System.AccessToken)"} -ContentType "application/json" -Body $json
+        Write-Output "##[error]Setting current task to failed."
+        Write-Host "##vso[task.complete result=Failed;]DONE"
+    }
+
+    $webAppName = "app-yourappname-$digits"
+    Write-Host "Web app name is $webAppName."
+    $swaggerRedirectUri = "https://$webAppName.azurewebsites.net/swagger/oauth2-redirect.html"
+    $backendRedirectUri = "https://$webAppName.azurewebsites.net/signin-oidc"
+    Write-Host "##vso[task.setvariable variable=webAppName;]$webAppName"
+    Write-Host "##vso[task.setvariable variable=swaggerRedirectUri;]$swaggerRedirectUri"
+    Write-Host "##vso[task.setvariable variable=backendRedirectUri;]$backendRedirectUri"
+  displayName: 'Extract feature env name'
 
 # Restores the dependencies and tools of a project.
 - task: DotNetCoreCLI@2
